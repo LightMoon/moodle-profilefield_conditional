@@ -185,7 +185,9 @@ class profile_field_conditional extends profile_field_menu {
             return $errors;
         }
 
+        $userid = (int) ($usernew->id ?? 0);
         $dependentfields = null;
+        $unfillable = [];
         foreach ($this->requiredset[$selected] as $requiredfield) {
             // A field that is also hidden for the selected option is never required.
             if (in_array($requiredfield, $this->disabledset[$selected] ?? [], true)) {
@@ -193,46 +195,34 @@ class profile_field_conditional extends profile_field_menu {
             }
 
             // The fields are looked up lazily, so that no queries are made when there is nothing to check.
-            $dependentfields ??= $this->get_dependent_fields((int) ($usernew->id ?? 0));
+            $dependentfields ??= $this->get_dependent_fields($userid);
             if (!isset($dependentfields[$requiredfield])) {
                 continue;
             }
             $dependent = $dependentfields[$requiredfield];
             $inputname = 'profile_field_' . $requiredfield;
-            $fillable = $this->is_fillable($dependent);
 
-            if (property_exists($usernew, $inputname) || $fillable) {
-                $submitted = $usernew->{$inputname} ?? null;
-            } else {
-                // The field is not part of the validated form, so an omitted value keeps the stored one.
-                $submitted = $dependent->data;
+            if ($this->is_fillable($dependent)) {
+                if (!$this->has_valid_value($dependent, $usernew->{$inputname} ?? null)) {
+                    $data = new stdClass();
+                    $data->field1 = format_string($this->field->name);
+                    $data->value1 = $this->options[$selected] ?? $selected;
+                    $data->field2 = $requiredfield;
+                    $errors[$inputname] = get_string('requiredbycondition1', 'profilefield_conditional', $data);
+                }
+            } else if (!$this->has_valid_value($dependent, $this->get_stored_value($dependent, $userid))) {
+                // Whatever was submitted for a field the user cannot fill in is not trusted. Only the stored value counts.
+                $unfillable[] = format_string($dependent->field->name);
             }
-            if (is_array($submitted)) {
-                // Editor and textarea fields submit their value as an array with a "text" key.
-                $submitted = $submitted['text'] ?? '';
-            }
-            $value = is_scalar($submitted) ? (string) $submitted : '';
+        }
 
-            // A missing key, null, an empty string and whitespace are all empty. A "0" is a valid value.
-            $isempty = trim($value) === '';
-            $invalid = !$isempty
-                && $dependent instanceof profile_field_menu
-                && !array_key_exists($value, $dependent->options);
-            if (!$isempty && !$invalid) {
-                continue;
-            }
-
+        if ($unfillable) {
+            // The inputs are not displayed, so the error can only be reported on the conditional field.
             $data = new stdClass();
             $data->field1 = format_string($this->field->name);
             $data->value1 = $this->options[$selected] ?? $selected;
-            if ($fillable) {
-                $data->field2 = $requiredfield;
-                $errors[$inputname] = get_string('requiredbycondition1', 'profilefield_conditional', $data);
-            } else {
-                // The input is not displayed, so the error can only be reported on the conditional field.
-                $data->field2 = format_string($dependent->field->name);
-                $errors[$this->inputname] = get_string('requiredbycondition2', 'profilefield_conditional', $data);
-            }
+            $data->field2 = implode('", "', $unfillable);
+            $errors[$this->inputname] = get_string('requiredbycondition2', 'profilefield_conditional', $data);
         }
 
         return $errors;
@@ -268,5 +258,42 @@ class profile_field_conditional extends profile_field_menu {
         // Profile edit forms: locked fields are frozen for users without the update capability.
         return $field->is_editable()
             && (!$field->is_locked() || has_capability('moodle/user:update', context_system::instance()));
+    }
+
+    /**
+     * Returns the value saved in the database for the user, ignoring the default value of the field.
+     *
+     * @param profile_field_base $field
+     * @param int $userid
+     * @return string|null Null when nothing is saved, or when there is no user yet.
+     */
+    protected function get_stored_value(profile_field_base $field, int $userid): ?string {
+        global $DB;
+
+        if ($userid <= 0) {
+            return null;
+        }
+        $value = $DB->get_field('user_info_data', 'data', ['userid' => $userid, 'fieldid' => $field->field->id]);
+        return $value === false ? null : $value;
+    }
+
+    /**
+     * Checks that a value, as submitted or saved, satisfies the requirement of a field.
+     *
+     * A missing, null, empty and whitespace-only value is not valid, but "0" is. The value of a menu must be one of its options.
+     *
+     * @param profile_field_base $field
+     * @param mixed $value
+     * @return bool
+     */
+    protected function has_valid_value(profile_field_base $field, $value): bool {
+        if (is_array($value)) {
+            // Editor and textarea fields submit their value as an array with a "text" key.
+            $value = $value['text'] ?? '';
+        }
+        if (!is_scalar($value) || trim((string) $value) === '') {
+            return false;
+        }
+        return !($field instanceof profile_field_menu) || array_key_exists((string) $value, $field->options);
     }
 }
