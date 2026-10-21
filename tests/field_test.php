@@ -48,6 +48,12 @@ final class field_test extends \advanced_testcase {
     /** @var string[] Options of the validity menu. */
     private const VALIDITIES = ['Not Applicable', 'Valid', 'Expiring Soon', 'Expired'];
 
+    /** @var array Submitted values that are not an option of the validity menu, or not even a scalar. */
+    private const MALFORMED_MENU_VALUES = [
+        'Fabricated', 'valid', 'Valid ', ' Valid', '0', ['Valid'], ['text' => 'Valid'],
+        ['text' => 'Valid', 'format' => FORMAT_HTML], [['Valid']], [], true, 1.5,
+    ];
+
     /**
      * Creates the profession field, its two dependent fields and an unrelated unique field.
      *
@@ -260,7 +266,7 @@ final class field_test extends \advanced_testcase {
         $this->create_fields();
         $userid = $this->prepare_context($loggedin);
 
-        foreach (['Fabricated', 'valid', 'Valid ', '0', ['Valid']] as $fabricated) {
+        foreach (self::MALFORMED_MENU_VALUES as $fabricated) {
             $usernew = $this->get_dentist($userid, [self::STAGE => 'Written Retake', self::VALIDITY => $fabricated]);
             $this->assertSame([self::VALIDITY], array_keys($this->validate($usernew)), json_encode($fabricated));
 
@@ -361,6 +367,15 @@ final class field_test extends \advanced_testcase {
 
         $usernew->{self::VALIDITY} = ['text' => 'Valid', 'format' => FORMAT_HTML];
         $this->assertSame([], $this->validate($usernew));
+        $this->assertSame([], $this->validate_directly($usernew));
+
+        // An array without text is empty, and the array structure is not accepted for the menu.
+        $usernew->{self::VALIDITY} = ['Valid'];
+        $this->assertSame([self::VALIDITY], array_keys($this->validate($usernew)));
+        $usernew->{self::VALIDITY} = 'Valid';
+        $usernew->{self::STAGE} = ['text' => '1', 'format' => FORMAT_HTML];
+        $this->assertSame([self::STAGE], array_keys($this->validate($usernew)));
+        $this->assertSame([self::STAGE], array_keys($this->validate_directly($usernew)));
     }
 
     // Fields that the user cannot fill in: the submitted data is not trusted, the saved data is.
@@ -514,6 +529,25 @@ final class field_test extends \advanced_testcase {
 
         $usernew = $this->get_dentist($userid, [self::VALIDITY => 'Expiring Soon']);
         $this->assertSame([self::STAGE], array_keys($this->validate_directly($usernew)));
+    }
+
+    /**
+     * Only the scalar key of an option is valid for a menu, and malformed values do not cause errors other than validation ones.
+     */
+    #[DataProvider('context_provider')]
+    public function test_validator_menu_values(bool $loggedin): void {
+        $this->create_fields();
+        $userid = $this->prepare_context($loggedin);
+
+        $usernew = $this->get_dentist($userid, [self::STAGE => 'First Written', self::VALIDITY => 'Valid']);
+        $this->assertSame([], $this->validate_directly($usernew));
+
+        foreach (self::MALFORMED_MENU_VALUES as $malformed) {
+            $usernew = $this->get_dentist($userid, [self::STAGE => 'First Written', self::VALIDITY => $malformed]);
+            $this->assertSame([self::VALIDITY], array_keys($this->validate_directly($usernew)), json_encode($malformed));
+            $usernew = $this->get_dentist($userid, [self::STAGE => $malformed, self::VALIDITY => 'Valid']);
+            $this->assertSame([self::STAGE], array_keys($this->validate_directly($usernew)), json_encode($malformed));
+        }
     }
 
     #[DataProvider('context_provider')]

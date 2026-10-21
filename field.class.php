@@ -280,20 +280,24 @@ class profile_field_conditional extends profile_field_menu {
     /**
      * Checks that a value, as submitted or saved, satisfies the requirement of a field.
      *
-     * A missing, null, empty and whitespace-only value is not valid, but "0" is. The value of a menu must be one of its options.
+     * A missing, null, empty and whitespace-only value is not valid, but "0" is. The value of a menu must be the key of one of
+     * its options, as a scalar.
      *
      * @param profile_field_base $field
      * @param mixed $value
      * @return bool
      */
     protected function has_valid_value(profile_field_base $field, $value): bool {
+        if ($field instanceof profile_field_menu) {
+            // Menus submit the scalar key of an option, anything else is malformed.
+            return is_scalar($value)
+                && trim((string) $value) !== ''
+                && array_key_exists((string) $value, $field->options);
+        }
         if (is_array($value)) {
             // Editor and textarea fields submit their value as an array with a "text" key.
             $value = $value['text'] ?? '';
         }
-        if (!is_scalar($value) || trim((string) $value) === '') {
-            return false;
-        }
-        return !($field instanceof profile_field_menu) || array_key_exists((string) $value, $field->options);
+        return is_scalar($value) && trim((string) $value) !== '';
     }
 }
