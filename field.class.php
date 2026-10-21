@@ -281,7 +281,8 @@ class profile_field_conditional extends profile_field_menu {
      * Checks that a value, as submitted or saved, satisfies the requirement of a field.
      *
      * A missing, null, empty and whitespace-only value is not valid, but "0" is. The value of a menu must be the key of one of
-     * its options, as a scalar.
+     * its options, submitted as a string or an integer. The editor of a textarea field submits an array holding the text and
+     * its format. Any other field type submits a scalar.
      *
      * @param profile_field_base $field
      * @param mixed $value
@@ -289,15 +290,20 @@ class profile_field_conditional extends profile_field_menu {
      */
     protected function has_valid_value(profile_field_base $field, $value): bool {
         if ($field instanceof profile_field_menu) {
-            // Menus submit the scalar key of an option, anything else is malformed.
-            return is_scalar($value)
+            return (is_string($value) || is_int($value))
                 && trim((string) $value) !== ''
                 && array_key_exists((string) $value, $field->options);
         }
         if (is_array($value)) {
-            // Editor and textarea fields submit their value as an array with a "text" key.
-            $value = $value['text'] ?? '';
+            if (!($field instanceof profile_field_textarea)) {
+                return false;
+            }
+            $formats = array_map('strval', [FORMAT_MOODLE, FORMAT_HTML, FORMAT_PLAIN, FORMAT_MARKDOWN]);
+            return is_string($value['text'] ?? null)
+                && trim($value['text']) !== ''
+                && is_scalar($value['format'] ?? null)
+                && in_array((string) $value['format'], $formats, true);
         }
-        return is_scalar($value) && trim((string) $value) !== '';
+        return is_scalar($value) && !is_bool($value) && trim((string) $value) !== '';
     }
 }

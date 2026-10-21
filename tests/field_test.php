@@ -57,10 +57,11 @@ final class field_test extends \advanced_testcase {
     /**
      * Creates the profession field, its two dependent fields and an unrelated unique field.
      *
-     * The "adc" variant has two menus, like the real configuration. The "text" variant has a menu with a "0" option and a
-     * text field, to cover the values that menus of that configuration cannot have.
+     * The "adc" variant has two menus, like the real configuration. The "text" and "textarea" variants have a menu with
+     * numeric options (including "0") and a text or textarea field, to cover values that the menus of the real configuration
+     * cannot have.
      *
-     * @param string $variant Either "adc" or "text".
+     * @param string $variant One of "adc", "text" or "textarea".
      * @param array $dependentsettings Additional settings for both dependent fields.
      */
     private function create_fields(string $variant = 'adc', array $dependentsettings = []): void {
@@ -74,7 +75,7 @@ final class field_test extends \advanced_testcase {
         ] + $dependentsettings);
         $generator->create_custom_profile_field(
             [
-                'datatype' => $variant === 'adc' ? 'menu' : 'text',
+                'datatype' => $variant === 'adc' ? 'menu' : $variant,
                 'shortname' => 'written_validity_status',
                 'name' => 'Written validity status',
                 'signup' => 1,
@@ -354,28 +355,87 @@ final class field_test extends \advanced_testcase {
         $this->assertSame([], $this->validate_directly($usernew));
     }
 
-    public function test_text_value_as_array_with_text_key(): void {
+    #[DataProvider('context_provider')]
+    public function test_text_field_takes_scalar_values(bool $loggedin): void {
         $this->create_fields('text');
-        $this->prepare_context(false);
+        $userid = $this->prepare_context($loggedin);
 
-        $usernew = $this->get_usernew(0, [
-            self::CONTROLLER => 'Dentist',
-            self::STAGE => '1',
-            self::VALIDITY => ['text' => '  ', 'format' => FORMAT_HTML],
-        ]);
-        $this->assertSame([self::VALIDITY], array_keys($this->validate($usernew)));
-
-        $usernew->{self::VALIDITY} = ['text' => 'Valid', 'format' => FORMAT_HTML];
+        $usernew = $this->get_dentist($userid, [self::STAGE => '1', self::VALIDITY => 'Valid']);
         $this->assertSame([], $this->validate($usernew));
         $this->assertSame([], $this->validate_directly($usernew));
 
-        // An array without text is empty, and the array structure is not accepted for the menu.
-        $usernew->{self::VALIDITY} = ['Valid'];
-        $this->assertSame([self::VALIDITY], array_keys($this->validate($usernew)));
-        $usernew->{self::VALIDITY} = 'Valid';
-        $usernew->{self::STAGE} = ['text' => '1', 'format' => FORMAT_HTML];
-        $this->assertSame([self::STAGE], array_keys($this->validate($usernew)));
-        $this->assertSame([self::STAGE], array_keys($this->validate_directly($usernew)));
+        // The array of the editors is not what a text field submits.
+        foreach ([['text' => 'Valid', 'format' => FORMAT_HTML], ['text' => 'Valid'], ['Valid'], []] as $malformed) {
+            $usernew = $this->get_dentist($userid, [self::STAGE => '1', self::VALIDITY => $malformed]);
+            $this->assertSame([self::VALIDITY], array_keys($this->validate($usernew)), json_encode($malformed));
+            $this->assertSame([self::VALIDITY], array_keys($this->validate_directly($usernew)), json_encode($malformed));
+        }
+
+        foreach (['', '  ', null] as $empty) {
+            $usernew = $this->get_dentist($userid, [self::STAGE => '1', self::VALIDITY => $empty]);
+            $this->assertSame([self::VALIDITY], array_keys($this->validate($usernew)), json_encode($empty));
+        }
+    }
+
+    #[DataProvider('context_provider')]
+    public function test_textarea_field_takes_editor_values(bool $loggedin): void {
+        $this->create_fields('textarea');
+        $userid = $this->prepare_context($loggedin);
+
+        $valid = [
+            ['text' => '<p>Valid</p>', 'format' => FORMAT_HTML],
+            ['text' => 'Valid', 'format' => (string) FORMAT_HTML, 'itemid' => 123],
+            ['text' => '0', 'format' => FORMAT_MARKDOWN],
+            'Valid',
+            '0',
+        ];
+        foreach ($valid as $value) {
+            $usernew = $this->get_dentist($userid, [self::STAGE => '1', self::VALIDITY => $value]);
+            $this->assertSame([], $this->validate($usernew), json_encode($value));
+            $this->assertSame([], $this->validate_directly($usernew), json_encode($value));
+        }
+
+        $malformed = [
+            ['text' => '', 'format' => FORMAT_HTML],
+            ['text' => " \n ", 'format' => FORMAT_HTML],
+            ['text' => 'Valid'],
+            ['format' => FORMAT_HTML],
+            ['text' => 'Valid', 'format' => 99],
+            ['text' => 'Valid', 'format' => 'html'],
+            ['text' => 'Valid', 'format' => [FORMAT_HTML]],
+            ['text' => ['Valid'], 'format' => FORMAT_HTML],
+            ['text' => null, 'format' => FORMAT_HTML],
+            ['Valid'],
+            [],
+            '',
+            ' ',
+        ];
+        foreach ($malformed as $value) {
+            $usernew = $this->get_dentist($userid, [self::STAGE => '1', self::VALIDITY => $value]);
+            $this->assertSame([self::VALIDITY], array_keys($this->validate($usernew)), json_encode($value));
+            $this->assertSame([self::VALIDITY], array_keys($this->validate_directly($usernew)), json_encode($value));
+        }
+    }
+
+    /**
+     * A menu with numeric options takes the key of the option as a string or an integer, but not as a boolean or a float.
+     */
+    #[DataProvider('context_provider')]
+    public function test_numeric_menu_options(bool $loggedin): void {
+        $this->create_fields('text');
+        $userid = $this->prepare_context($loggedin);
+
+        foreach (['0', 0, '1', 1, '2'] as $valid) {
+            $usernew = $this->get_dentist($userid, [self::STAGE => $valid, self::VALIDITY => 'Valid']);
+            $this->assertSame([], $this->validate($usernew), var_export($valid, true));
+            $this->assertSame([], $this->validate_directly($usernew), var_export($valid, true));
+        }
+
+        foreach ([true, false, 1.0, 0.0, 1.5, '1.0', '01', '3', ['1'], ['text' => '1']] as $invalid) {
+            $usernew = $this->get_dentist($userid, [self::STAGE => $invalid, self::VALIDITY => 'Valid']);
+            $this->assertSame([self::STAGE], array_keys($this->validate($usernew)), var_export($invalid, true));
+            $this->assertSame([self::STAGE], array_keys($this->validate_directly($usernew)), var_export($invalid, true));
+        }
     }
 
     // Fields that the user cannot fill in: the submitted data is not trusted, the saved data is.
