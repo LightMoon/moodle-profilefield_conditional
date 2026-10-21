@@ -174,57 +174,87 @@ class profile_field_conditional extends profile_field_menu {
 
     #[\Override]
     public function edit_validate_field($usernew) {
-        global $DB, $PAGE;
-
         $errors = [];
 
+        $selected = $usernew->{$this->inputname} ?? null;
         if (
-            !empty($usernew->{$this->inputname})
-            && !empty($this->requiredset[$usernew->{$this->inputname}])
-            && count((array) $usernew) > 2  // If not, we have an incomplete user object, and a validation check is not possible.
+            !is_scalar($selected)
+            || empty($this->requiredset[$selected])
+            || count((array) $usernew) <= 2  // If not, we have an incomplete user object, and a validation check is not possible.
         ) {
-            foreach ($this->requiredset[$usernew->{$this->inputname}] as $requiredfield) {
+            return $errors;
+        }
+
+        $dependentfields = null;
+        foreach ($this->requiredset[$selected] as $requiredfield) {
+            // A field that is also hidden for the selected option is never required.
+            if (in_array($requiredfield, $this->disabledset[$selected] ?? [], true)) {
+                continue;
+            }
+
+            // Only fields the current user can actually fill in this form can be required.
+            // This is looked up lazily, so that no queries are made when there is nothing to check.
+            $dependentfields ??= $this->get_dependent_fields((int) ($usernew->id ?? 0));
+            if (!isset($dependentfields[$requiredfield]) || !$this->is_fillable($dependentfields[$requiredfield])) {
+                continue;
+            }
+
+            $inputname = 'profile_field_' . $requiredfield;
+            $submitted = $usernew->{$inputname} ?? null;
+            if (is_array($submitted)) {
+                // Editor and textarea fields submit their value as an array with a "text" key.
+                $submitted = $submitted['text'] ?? '';
+            }
+            $value = is_scalar($submitted) ? (string) $submitted : '';
+
+            // A missing key, null, an empty string and whitespace are all empty. A "0" is a valid value.
+            $isempty = trim($value) === '';
+            $invalid = !$isempty
+                && $dependentfields[$requiredfield] instanceof profile_field_menu
+                && !array_key_exists($value, $dependentfields[$requiredfield]->options);
+
+            if ($isempty || $invalid) {
                 $data = new stdClass();
                 $data->field1 = format_string($this->field->name);
-                $data->value1 = $this->options[$usernew->{$this->inputname}];
+                $data->value1 = $this->options[$selected] ?? $selected;
                 $data->field2 = $requiredfield;
-
-                if (isset($usernew->{'profile_field_' . $requiredfield})) {
-                    if (
-                        is_array($usernew->{'profile_field_' . $requiredfield}) &&
-                        isset($usernew->{'profile_field_' . $requiredfield}['text'])
-                    ) {
-                        $value = $usernew->{'profile_field_' . $requiredfield}['text'];
-                    } else {
-                        $value = $usernew->{'profile_field_' . $requiredfield};
-                    }
-                } else {
-                    $value = '';
-                }
-
-                if (($value !== '0') && empty($value)) {
-                    if (isset($usernew->{'profile_field_' . $requiredfield})) {
-                        $errors['profile_field_' . $requiredfield] = get_string(
-                            'requiredbycondition1',
-                            'profilefield_conditional',
-                            $data
-                        );
-                    } else if (
-                        in_array(
-                            $PAGE->url->out_as_local_url(),
-                            [
-                                '/user/edit.php',
-                                '/user/editadvanced.php',
-                            ]
-                        )
-                    ) {
-                        $data->field2 = $DB->get_field('user_info_field', 'name', ['shortname' => $requiredfield]);
-                        $errors[$this->inputname] = get_string('requiredbycondition2', 'profilefield_conditional', $data);
-                    }
-                }
+                $errors[$inputname] = get_string('requiredbycondition1', 'profilefield_conditional', $data);
             }
         }
 
         return $errors;
+    }
+
+    /**
+     * Returns the profile fields of the given user (or of the signup form for 0), indexed by shortname.
+     *
+     * @param int $userid
+     * @return profile_field_base[]
+     */
+    protected function get_dependent_fields(int $userid): array {
+        $fields = [];
+        foreach (profile_get_user_fields_with_data($userid) as $field) {
+            $fields[$field->field->shortname] = $field;
+        }
+        return $fields;
+    }
+
+    /**
+     * Whether the current user is given an editable element for the field in the form being validated.
+     *
+     * Validation errors are only meaningful for such fields, as an error on an absent or frozen
+     * element could never be resolved by the user.
+     *
+     * @param profile_field_base $field
+     * @return bool
+     */
+    protected function is_fillable(profile_field_base $field): bool {
+        if (empty($field->userid)) {
+            // Signup form: only the fields flagged for signup are displayed.
+            return $field->is_signup_field() && $field->is_editable();
+        }
+        // Profile edit forms: locked fields are frozen for users without the update capability.
+        return $field->is_editable()
+            && (!$field->is_locked() || has_capability('moodle/user:update', context_system::instance()));
     }
 }
