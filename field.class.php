@@ -192,15 +192,21 @@ class profile_field_conditional extends profile_field_menu {
                 continue;
             }
 
-            // Only fields the current user can actually fill in this form can be required.
-            // This is looked up lazily, so that no queries are made when there is nothing to check.
+            // The fields are looked up lazily, so that no queries are made when there is nothing to check.
             $dependentfields ??= $this->get_dependent_fields((int) ($usernew->id ?? 0));
-            if (!isset($dependentfields[$requiredfield]) || !$this->is_fillable($dependentfields[$requiredfield])) {
+            if (!isset($dependentfields[$requiredfield])) {
                 continue;
             }
-
+            $dependent = $dependentfields[$requiredfield];
             $inputname = 'profile_field_' . $requiredfield;
-            $submitted = $usernew->{$inputname} ?? null;
+            $fillable = $this->is_fillable($dependent);
+
+            if (property_exists($usernew, $inputname) || $fillable) {
+                $submitted = $usernew->{$inputname} ?? null;
+            } else {
+                // The field is not part of the validated form, so an omitted value keeps the stored one.
+                $submitted = $dependent->data;
+            }
             if (is_array($submitted)) {
                 // Editor and textarea fields submit their value as an array with a "text" key.
                 $submitted = $submitted['text'] ?? '';
@@ -210,15 +216,22 @@ class profile_field_conditional extends profile_field_menu {
             // A missing key, null, an empty string and whitespace are all empty. A "0" is a valid value.
             $isempty = trim($value) === '';
             $invalid = !$isempty
-                && $dependentfields[$requiredfield] instanceof profile_field_menu
-                && !array_key_exists($value, $dependentfields[$requiredfield]->options);
+                && $dependent instanceof profile_field_menu
+                && !array_key_exists($value, $dependent->options);
+            if (!$isempty && !$invalid) {
+                continue;
+            }
 
-            if ($isempty || $invalid) {
-                $data = new stdClass();
-                $data->field1 = format_string($this->field->name);
-                $data->value1 = $this->options[$selected] ?? $selected;
+            $data = new stdClass();
+            $data->field1 = format_string($this->field->name);
+            $data->value1 = $this->options[$selected] ?? $selected;
+            if ($fillable) {
                 $data->field2 = $requiredfield;
                 $errors[$inputname] = get_string('requiredbycondition1', 'profilefield_conditional', $data);
+            } else {
+                // The input is not displayed, so the error can only be reported on the conditional field.
+                $data->field2 = format_string($dependent->field->name);
+                $errors[$this->inputname] = get_string('requiredbycondition2', 'profilefield_conditional', $data);
             }
         }
 
@@ -242,8 +255,7 @@ class profile_field_conditional extends profile_field_menu {
     /**
      * Whether the current user is given an editable element for the field in the form being validated.
      *
-     * Validation errors are only meaningful for such fields, as an error on an absent or frozen
-     * element could never be resolved by the user.
+     * Errors for fields that are not fillable cannot be attached to their (absent or frozen) elements.
      *
      * @param profile_field_base $field
      * @return bool

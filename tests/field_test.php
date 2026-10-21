@@ -293,9 +293,9 @@ final class field_test extends \advanced_testcase {
     }
 
     /**
-     * Fields that are not on the signup form cannot be filled in, so they are not required there.
+     * Fields that are not on the signup form cannot be filled in, so the error is reported on the conditional field.
      */
-    public function test_field_not_on_signup_form_is_ignored(): void {
+    public function test_field_not_on_signup_form_is_reported_on_the_controller(): void {
         global $DB;
 
         $this->create_fields();
@@ -303,23 +303,49 @@ final class field_test extends \advanced_testcase {
         $this->prepare_context(false);
 
         $errors = $this->validate($this->get_usernew(0, [self::CONTROLLER => 'Dentist']));
+        $this->assertEqualsCanonicalizing([self::STAGE, self::CONTROLLER], array_keys($errors));
+        $this->assertStringContainsString('Written validity status', $errors[self::CONTROLLER]);
+
+        $usernew = $this->get_usernew(0, [self::CONTROLLER => 'Dentist', self::STAGE => '1', self::VALIDITY => 'Valid']);
+        $this->assertSame([], $this->validate($usernew));
+    }
+
+    /**
+     * A dependent field that no longer exists cannot be validated.
+     */
+    public function test_missing_dependent_field_is_ignored(): void {
+        global $DB;
+
+        $this->create_fields();
+        $DB->delete_records('user_info_field', ['shortname' => 'written_validity_status']);
+        $this->prepare_context(false);
+
+        $errors = $this->validate($this->get_usernew(0, [self::CONTROLLER => 'Dentist']));
         $this->assertSame([self::STAGE], array_keys($errors));
     }
 
     /**
-     * Locked fields are frozen for users, so they are only required from those who can change them.
+     * Locked fields are frozen for users, so they keep their stored value and only those who can change them need to fill them.
      */
     public function test_locked_field_on_edit_form(): void {
         $this->resetAfterTest();
         $this->create_fields(['locked' => 1]);
         $user = $this->getDataGenerator()->create_user();
-        $usernew = $this->get_usernew((int) $user->id, [self::CONTROLLER => 'Dentist']);
+        $omitted = $this->get_usernew((int) $user->id, [self::CONTROLLER => 'Dentist']);
 
+        // Without a stored value, the error is reported on the conditional field as the user cannot edit the others.
         $this->setUser($user);
-        $this->assertSame([], $this->validate($usernew));
+        $this->assertSame([self::CONTROLLER], array_keys($this->validate($omitted)));
 
+        // The stored values are enough when the frozen elements are not submitted.
+        profile_save_data($this->get_usernew((int) $user->id, [self::STAGE => '2', self::VALIDITY => 'Valid']));
+        $this->assertSame([], $this->validate($omitted));
+
+        // The administrators can edit the fields, so a missing value is reported there.
         $this->setAdminUser();
-        $this->assertEqualsCanonicalizing([self::STAGE, self::VALIDITY], array_keys($this->validate($usernew)));
+        $other = $this->getDataGenerator()->create_user();
+        $omitted = $this->get_usernew((int) $other->id, [self::CONTROLLER => 'Dentist']);
+        $this->assertEqualsCanonicalizing([self::STAGE, self::VALIDITY], array_keys($this->validate($omitted)));
     }
 
     /**
